@@ -7,7 +7,10 @@ from torch.utils.data import DataLoader
 from SNN import SNN
 from ResNet6 import ResNet6
 
-# 71% accuracy
+# original 93% accuracy
+
+# 71% accuracy trained with 60% SNN teacher
+# 91% accuracy trained with 88% ResNet6 teacher
 
 class BasicBlock(nn.Module):
     expansion = 1
