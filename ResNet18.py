@@ -5,9 +5,9 @@ from torchvision import datasets, transforms
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from SNN import SNN
+from ResNet6 import ResNet6
 
-# 62% teacher accuracy
-# 70% accuracy, very interesting
+# 71% accuracy
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -58,7 +58,6 @@ class ResNetCIFAR(nn.Module):
     def __init__(self, block, layers, num_classes=10):
         super(ResNetCIFAR, self).__init__()
         self.in_channels = 64
-        hidden_dim = 131072
 
         self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
@@ -69,13 +68,8 @@ class ResNetCIFAR(nn.Module):
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-
-        self.inserted_fc = nn.Linear(64, hidden_dim)
-
-        self.fc = nn.Linear(hidden_dim, num_classes)
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
         self.softmax = nn.Softmax(dim=1)
-
-        
 
     def _make_layer(self, block, out_channels, blocks, stride):
         strides = [stride] + [1] * (blocks - 1)
@@ -88,10 +82,11 @@ class ResNetCIFAR(nn.Module):
     def forward_logits(self, x):
         x = torch.relu(self.bn1(self.conv1(x)))
         x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x = self.inserted_fc(x)
-        x = torch.relu(x)
         x = self.fc(x)
         return x
 
@@ -100,7 +95,7 @@ class ResNetCIFAR(nn.Module):
         return self.softmax(logits)
 
 
-def ResNet6(num_classes=10):
+def ResNet18(num_classes=10):
     return ResNetCIFAR(BasicBlock, [2, 2, 2, 2], num_classes=num_classes)
 
 
@@ -131,7 +126,7 @@ def train_with_teacher(model, device, train_loader, optimizer, criterion, epoch,
     return running_loss / len(train_loader)
 
 
-def test(model, device, test_loader, criterion):
+def test(model, device, test_loader):
     model.eval()
     test_loss = 0.0
     correct = 0
@@ -140,19 +135,17 @@ def test(model, device, test_loader, criterion):
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             logits = model.forward_logits(data)
-            target_oh = F.one_hot(target, num_classes=10).float() 
-            test_loss += criterion(logits, target_oh).item()
+            test_loss += F.cross_entropy(logits, target, reduction='sum').item()
             pred = logits.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
 
-    test_loss /= len(test_loader)
+    test_loss /= len(test_loader.dataset)
     accuracy = 100.0 * correct / len(test_loader.dataset)
     print(
         f"\nTest set: Average loss: {test_loss:.4f}, "
         f"Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
     )
     return test_loss, accuracy
-
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -177,25 +170,30 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=2)
     test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False, num_workers=2)
 
-    model = ResNet6(num_classes=10).to(device)
-    print('continuing from save')
-    model.load_state_dict(torch.load('models/resnet6_cifar10_teacher_SNN.pth', map_location=device))
+    model = ResNet18(num_classes=10).to(device)
 
-    optimizer = optim.Adam(model.parameters(), eps=1e-10, lr=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=0.5,
+        patience=10,
+        min_lr=1e-8,
+    )
     criterion = nn.MSELoss()
 
     print('loading teacher...')
-    teacher = SNN().to(device)
-    teacher.load_state_dict(torch.load('models/resnet1_cifar10.pth', map_location=device)) 
+    teacher = ResNet6().to(device)
+    teacher.load_state_dict(torch.load('models/resnet6_cifar10.pth', map_location=device)) 
 
     for epoch in range(1, 101):
         train_loss = train_with_teacher(model, device, train_loader, optimizer, criterion, epoch, teacher)
         print(f"Epoch {epoch}: Train loss {train_loss:.6f}")
-        test(model, device, test_loader, criterion)
-        # scheduler.step()
+        val_loss, _ = test(model, device, test_loader)
+        scheduler.step(val_loss)
 
-    torch.save(model.state_dict(), "models/resnet6_cifar10_teacher_SNN.pth")
-    print("Model saved to models/resnet6_cifar10_teacher_SNN.pth")
+    torch.save(model.state_dict(), "models/resnet18_cifar10_teacher_resnet6.pth")
+    print("Model saved to models/resnet18_cifar10_teacher_resnet6.pth")
 
 
 if __name__ == "__main__":
