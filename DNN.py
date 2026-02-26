@@ -4,24 +4,29 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from SNN import SNN
 
-# 58% No teacher (vanilla)
-# 43% ResNet-2 as teacher
-# 59% ResNet-6 as teacher
-# 58% ResNet-18 as teacher
+# 56.5% trained with 58% vanilla SNN
+# 44% trained with 58% ResNet18 distilled SNN, not very good at all
 
-class SNN(nn.Module):
+class DNN(nn.Module):
     def __init__(self, num_classes=10):
-        super(SNN, self).__init__()
+        super(DNN, self).__init__()
 
         input_dim = 3 * 32 * 32
-        hidden_dim = 16384
+        hidden_dim1 = 2048
+        hidden_dim2 = 512
+        hidden_dim3 = 64
 
         self.net = nn.Sequential(
             nn.Flatten(),                   
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(input_dim, hidden_dim1),
             nn.ReLU(),
-            nn.Linear(hidden_dim, num_classes), 
+            nn.Linear(hidden_dim1, hidden_dim2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim2, hidden_dim3),
+            nn.ReLU(),
+            nn.Linear(hidden_dim3, num_classes), 
         )
         self.softmax = nn.Softmax(dim=1)
 
@@ -33,16 +38,20 @@ class SNN(nn.Module):
         return self.softmax(logits)
 
 
-def train(model, device, train_loader, optimizer, epoch):
+def train_with_teacher(model, device, train_loader, optimizer, criterion, epoch, teacher):
     model.train()
     running_loss = 0.0
-
+    teacher.eval()
 
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         logits = model.forward_logits(data)
-        loss = nn.CrossEntropyLoss(logits, target)
+         
+        with torch.no_grad():
+            target = teacher.forward_logits(data)
+
+        loss = criterion(logits, target)
         loss.backward()
         optimizer.step()
 
@@ -56,7 +65,7 @@ def train(model, device, train_loader, optimizer, epoch):
     return running_loss / len(train_loader)
 
 
-def test(model, device, test_loader, criterion):
+def test(model, device, test_loader):
     model.eval()
     test_loss = 0.0
     correct = 0
@@ -65,19 +74,17 @@ def test(model, device, test_loader, criterion):
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             logits = model.forward_logits(data)
-            target_oh = F.one_hot(target, num_classes=10).float() 
-            test_loss += criterion(logits, target_oh).item()
+            test_loss += F.cross_entropy(logits, target, reduction='sum').item()
             pred = logits.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
 
-    test_loss /= len(test_loader)
+    test_loss /= len(test_loader.dataset)
     accuracy = 100.0 * correct / len(test_loader.dataset)
     print(
         f"\nTest set: Average loss: {test_loss:.4f}, "
         f"Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
     )
     return test_loss, accuracy
-
 
 
 def main():
@@ -100,22 +107,34 @@ def main():
 
     train_dataset = datasets.CIFAR10("./data", train=True, download=True, transform=train_transform)
     test_dataset = datasets.CIFAR10("./data", train=False, download=True, transform=test_transform)
-    train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=12)
-    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False, num_workers=12)
+    train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=2)
+    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False, num_workers=2)
 
-    model = SNN(num_classes=10).to(device)
-    
+    model = DNN(num_classes=10).to(device)
+
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
-    criterion = nn.CrossEntropyLoss()
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=0.5,
+        patience=10,
+        min_lr=1e-8,
+    )
+    criterion = nn.MSELoss()
 
-    for epoch in range(1, 101):
-        train_loss = train(model, device, train_loader, optimizer, epoch)
+    print('loading teacher...')
+    teacher = SNN().to(device)
+    teacher.load_state_dict(torch.load('models/resnet1_cifar10_teacher_resnet18.pth', map_location=device)) 
+
+    for epoch in range(1, 201):
+        train_loss = train_with_teacher(model, device, train_loader, optimizer, criterion, epoch, teacher)
         print(f"Epoch {epoch}: Train loss {train_loss:.6f}")
-        test(model, device, test_loader, criterion)
-        # scheduler.step()
-    
-    torch.save(model.state_dict(), "models/SNN_cifar10_retard.pth")
-    print("Model saved to models/SNN_cifar10_retard.pth")
+        val_loss, _ = test(model, device, test_loader)
+        scheduler.step(val_loss)
+
+    torch.save(model.state_dict(), "models/DNN_cifar10_teacher_distilled_SNN.pth")
+    print("Model saved to models/DNN_cifar10_teacher_distilled_SNN.pth")
+
 
 if __name__ == "__main__":
     main()

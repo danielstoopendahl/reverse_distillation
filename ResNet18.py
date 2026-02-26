@@ -9,8 +9,20 @@ from ResNet6 import ResNet6
 
 # original 93% accuracy
 
-# 71% accuracy trained with 60% SNN teacher
+# 58% accuracy trained with 56% SNN teacher
+# 71% accuracy trained with 60% Distilled SNN teacher
 # 91% accuracy trained with 88% ResNet6 teacher
+# Quite high variance in all
+
+# 61.5% trained with 58% vanilla SNN
+# Lower test set loss but better accuracy
+
+# 65% trained with 58% ResNet18 distilled SNN
+# Has higher test set loss but better accuracy
+# Comes from "a few highly confident but wrong classifications"
+# Models isn't as certain in its guesses for the vanilla version, therefore it doesn't make as huge mistakes
+# Try also with just bigger DNN trained with the vanilla and distilled CNN
+
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -175,7 +187,7 @@ def main():
 
     model = ResNet18(num_classes=10).to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
@@ -186,8 +198,8 @@ def main():
     criterion = nn.MSELoss()
 
     print('loading teacher...')
-    teacher = ResNet6().to(device)
-    teacher.load_state_dict(torch.load('models/resnet6_cifar10.pth', map_location=device)) 
+    teacher = SNN().to(device)
+    teacher.load_state_dict(torch.load('models/resnet1_cifar10_vanilla.pth', map_location=device)) 
 
     for epoch in range(1, 101):
         train_loss = train_with_teacher(model, device, train_loader, optimizer, criterion, epoch, teacher)
@@ -195,8 +207,8 @@ def main():
         val_loss, _ = test(model, device, test_loader)
         scheduler.step(val_loss)
 
-    torch.save(model.state_dict(), "models/resnet18_cifar10_teacher_resnet6.pth")
-    print("Model saved to models/resnet18_cifar10_teacher_resnet6.pth")
+    torch.save(model.state_dict(), "models/resnet18_cifar10_teacher_distilled_SNN.pth")
+    print("Model saved to models/resnet18_cifar10_teacher_distilled_SNN.pth")
 
 
 if __name__ == "__main__":
